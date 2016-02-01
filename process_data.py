@@ -90,9 +90,12 @@ def add_unknown_words(word_vecs, vocab, min_df=1, k=300):
     For words that occur in at least min_df documents, create a separate word vector.    
     0.25 is chosen so the unknown vectors have (approximately) same variance as pre-trained ones
     """
+    unknown_words_count = 0
     for word in vocab:
         if word not in word_vecs and vocab[word] >= min_df:
-            word_vecs[word] = np.random.uniform(-0.25,0.25,k)  
+            unknown_words_count+=1
+            word_vecs[word] = np.random.uniform(-0.25,0.25,k)
+    print "added {0} unknown words".format(str(unknown_words_count))
 
 def clean_str(string, TREC=False):
     """

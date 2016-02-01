@@ -17,7 +17,9 @@ import re
 import warnings
 import sys
 import time
+from conv_net_classes import *
 warnings.filterwarnings("ignore")   
+
 
 #different non-linearities
 def ReLU(x):
@@ -57,6 +59,7 @@ def train_conv_net(datasets,
     lr_decay = adadelta decay parameter
     """    
     rng = np.random.RandomState(3435)
+    global img_h
     img_h = len(datasets[0][0])-1  
     filter_w = img_w    
     feature_maps = hidden_units[0]
@@ -80,6 +83,7 @@ def train_conv_net(datasets,
     zero_vec = np.zeros(img_w)
     set_zero = theano.function([zero_vec_tensor], updates=[(Words, T.set_subtensor(Words[0,:], zero_vec_tensor))], allow_input_downcast=True)
     layer0_input = Words[T.cast(x.flatten(),dtype="int32")].reshape((x.shape[0],1,x.shape[1],Words.shape[1]))                                  
+    global conv_layers
     conv_layers = []
     layer1_inputs = []
     for i in xrange(len(filter_hs)):
@@ -91,7 +95,8 @@ def train_conv_net(datasets,
         conv_layers.append(conv_layer)
         layer1_inputs.append(layer1_input)
     layer1_input = T.concatenate(layer1_inputs,1)
-    hidden_units[0] = feature_maps*len(filter_hs)    
+    hidden_units[0] = feature_maps*len(filter_hs)
+    global classifier
     classifier = MLPDropout(rng, input=layer1_input, layer_sizes=hidden_units, activations=activations, dropout_rates=dropout_rate)
     
     #define parameters of the model and update functions using adadelta
@@ -152,7 +157,7 @@ def train_conv_net(datasets,
     test_layer1_input = T.concatenate(test_pred_layers, 1)
     test_y_pred = classifier.predict(test_layer1_input)
     test_error = T.mean(T.neq(test_y_pred, y))
-    test_model_all = theano.function([x,y], test_error, allow_input_downcast = True)   
+    test_model_all = theano.function([x,y], test_error, allow_input_downcast = True)
     
     #start training over mini-batches
     print '... training'
@@ -181,7 +186,7 @@ def train_conv_net(datasets,
             best_val_perf = val_perf
             test_loss = test_model_all(test_set_x,test_set_y)        
             test_perf = 1- test_loss         
-    return test_perf
+    return test_perf, classifier
 
 def shared_dataset(data_xy, borrow=True):
         """ Function that loads the dataset into shared variables
@@ -273,7 +278,7 @@ def make_idx_data_cv(revs, word_idx_map, cv, max_l=51, k=300, filter_h=5):
     """
     train, test = [], []
     for rev in revs:
-        sent = get_idx_from_sent(rev["text"], word_idx_map, max_l, k, filter_h)   
+        sent = get_idx_from_sent(rev["text"], word_idx_map, max_l, k, filter_h)
         sent.append(rev["y"])
         if rev["split"]==cv:            
             test.append(sent)        
@@ -281,45 +286,83 @@ def make_idx_data_cv(revs, word_idx_map, cv, max_l=51, k=300, filter_h=5):
             train.append(sent)   
     train = np.array(train,dtype="int")
     test = np.array(test,dtype="int")
-    return [train, test]     
-  
-   
-if __name__=="__main__":
-    print "loading data...",
-    x = cPickle.load(open("mr.p","rb"))
-    revs, W, W2, word_idx_map, vocab = x[0], x[1], x[2], x[3], x[4]
-    print "data loaded!"
-    mode= sys.argv[1]
-    word_vectors = sys.argv[2]    
-    if mode=="-nonstatic":
+    return [train, test]
+
+
+def train(mode, word_vectors):
+    global U
+    if mode == "-nonstatic":
         print "model architecture: CNN-non-static"
-        non_static=True
-    elif mode=="-static":
+        non_static = True
+    elif mode == "-static":
         print "model architecture: CNN-static"
-        non_static=False
-    execfile("conv_net_classes.py")    
-    if word_vectors=="-rand":
+        non_static = False
+    else:
+        raise Exception("mode param is missing")
+    execfile("conv_net_classes.py")
+    if word_vectors == "-rand":
         print "using: random vectors"
         U = W2
-    elif word_vectors=="-word2vec":
+    elif word_vectors == "-word2vec":
         print "using: word2vec vectors"
         U = W
+    else:
+        raise Exception("missing word vector param")
     results = []
-    r = range(0,10)    
+    r = range(0, 1)
     for i in r:
-        datasets = make_idx_data_cv(revs, word_idx_map, i, max_l=56,k=300, filter_h=5)
+        datasets = make_idx_data_cv(revs, word_idx_map, i, max_l=56, k=300, filter_h=5)
         perf = train_conv_net(datasets,
                               U,
                               lr_decay=0.95,
-                              filter_hs=[3,4,5],
+                              filter_hs=[3, 4, 5],
                               conv_non_linear="relu",
-                              hidden_units=[100,2], 
-                              shuffle_batch=True, 
-                              n_epochs=25, 
+                              hidden_units=[100, 2],
+                              shuffle_batch=True,
+                              n_epochs=1,
                               sqr_norm_lim=9,
                               non_static=non_static,
                               batch_size=50,
                               dropout_rate=[0.5])
         print "cv: " + str(i) + ", perf: " + str(perf)
-        results.append(perf)  
+        results.append(perf)
     print str(np.mean(results))
+
+
+def predict_sentiment(plain_text):
+    max_l=56
+    k=300
+    filter_h=5
+    data = []
+    encoded=get_idx_from_sent(plain_text, word_idx_map, max_l, k, filter_h)
+    data.append(encoded)
+    data = np.array(data,dtype="int")
+
+    x = T.matrix('x')
+    pred_layers = []
+    batch_size = 1
+    Words = theano.shared(value = U, name = "Words")
+    test_layer0_input = Words[T.cast(x.flatten(),dtype="int32")].reshape((batch_size,1,img_h,Words.shape[1]))
+    for conv_layer in conv_layers:
+        layer0_output = conv_layer.predict(test_layer0_input, batch_size)
+        pred_layers.append(layer0_output.flatten(2))
+    layer1_input = T.concatenate(pred_layers, 1)
+    y_pred = classifier.predict(layer1_input)
+    predict = theano.function([x], y_pred, allow_input_downcast = True)
+    print predict(data)
+
+
+def load_data():
+    global revs, W, W2, word_idx_map
+    print "loading data...",
+    x = cPickle.load(open("mr.p", "rb"))
+    revs, W, W2, word_idx_map, vocab = x[0], x[1], x[2], x[3], x[4]
+    print "data loaded!"
+
+
+if __name__=="__main__":
+    load_data()
+    mode = sys.argv[1]
+    word_vectors = sys.argv[2]
+    print sys.argv
+    train(mode,word_vectors)
